@@ -1,0 +1,87 @@
+```{r}
+library(SingleCellExperiment)
+library(tidyverse)
+library(here)
+library(purrr)
+library(zellkonverter)
+
+set.seed(1)
+
+i_am("code/10_gsva.qmd")
+
+walk(file.path("code/r_utils",
+               c("run_gsva.R", "project_helpers.R")),
+     source)
+
+paths <- make_paths("10_gsva", data = list(
+  mouse_data = here("data", "processed", "06_combined_annotated.h5ad")
+))
+```
+
+```{r}
+global_senescence_2020 <- c(
+  "Ern1", "Il1a", "Il1b", "Cxcl10", "Cxcl1", "Cxcl2", "Cxcl3",
+  "Ccn2", "Ccl2", "Ccl8", "Ccl20", "Cxcl15", "Il6", "Dpp4",
+  "Ngfr", "Vegfa", "Vegfb", "Vegfc", "Mmp1a", "Mmp3", "Mmp9",
+  "Igfbp3", "Igfbp5", "Igfbp7", "Serpine1", "Serpinb2", "Sema3a",
+  "Sema6d", "Tgfb1", "Bmp2", "Inhba", "Thbs1", "Ifng", "Areg",
+  "Ereg", "Lif", "Vim", "Gdf15", "Sfrp1", "Wnt16", "Acadvl",
+  "Adpgk", "B4galt7", "Bcl2l2", "Ccnd1", "Chmp5", "Dda1", "Dgka",
+  "Dynlt3", "Atosb", "Gbe1", "Gdnf", "Klc1", "mt-Cyb", "Nol3",
+  "P4ha2", "Pdlim4", "Plk3", "Plxna3", "Pofut2", "Rai14", "Scoc",
+  "Slc10a3", "Slc6a3", "Susd6", "Taf13", "Tmem87b", "Tollip",
+  "Tspan13", "Ufm1", "Zbtb7a", "Znhit1", "Junb", "Cdkn1a",
+  "Cdkn2b", "Fosl1", "Cdkn2a", "Cdkn2c", "Cebpb", "E2f7", "Jun",
+  "Cdkn1b", "Ing1", "Isg15", "Irak2", "Hmga2", "Cdkn1c", "Hdac9"
+)
+developmental_senescence_2025 <- c(
+  "Cdkn1a", "Cdkn2b", "Cdkn1b",
+  "Tgfb1", "Foxo3", "Foxo1", "Glb1"
+)
+
+gene_sets <- list(
+  "global_senescence_literature_curated_2020" = global_senescence_2020,
+  "developmental_senescence_2025" = developmental_senescence_2025
+)
+
+hif1_sig <- kegg_symbols("mmu04066")
+nk_cyto  <- kegg_symbols("mmu04650")
+vegf     <- kegg_symbols("mmu04370")
+
+gene_sets_nk <- list(
+  "KEGG_Hif1_Signaling" = hif1_sig,
+  "KEGG_NK_Cytotoxicity" = nk_cyto,
+  "KEGG_Vegf_Signaling" = vegf
+)
+```
+
+```{r}
+sce <- readH5AD(paths$data$mouse_data, reader = "R")
+```
+
+```{r}
+sce_sub <- sce[, sce$lineage %in% c("epithelial", "mesenchymal", "endothelial")
+               & !(sce$celltype %in% c("unannotated", "lymphatic"))]
+colData(sce_sub)$cell_type <- case_when(
+  sce_sub$lineage == "endothelial" ~ sce_sub$celltype,
+  sce_sub$lineage %in% c("epithelial", "mesenchymal") ~ sce_sub$lineage
+)
+
+res <- run_gsva(sce_sub,
+                gene_sets,
+                celltype_col = "cell_type",
+                sample_col = "sample_id")
+
+write.csv(res$fc_df, file.path(paths$out$tables, "endo_gsva_fc_results.csv"), row.names = FALSE)
+```
+
+```{r}
+sce_nk <- sce[, sce$celltype %in% c("nks", "ilc3s")]
+
+res <- run_gsva(sce_nk,
+                gene_sets_nk,
+                celltype_col = "celltype",
+                sample_col = "sample_id")
+
+write.csv(res$fc_df, file.path(paths$out$tables, "nk_gsva_fc_results.csv"), row.names = FALSE)
+```

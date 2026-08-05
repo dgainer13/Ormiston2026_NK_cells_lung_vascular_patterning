@@ -1,0 +1,93 @@
+
+```{r}
+library(SingleCellExperiment)
+library(miloR)
+library(ggplot2)
+library(here)
+library(purrr)
+library(Seurat)
+library(zellkonverter)
+library(tidyverse)
+
+set.seed(1)
+
+i_am("code/08_milor.qmd")
+
+walk(file.path("code/r_utils",
+               c("run_milor.R", "project_helpers.R")),
+     source)
+
+paths <- make_paths("08_milor", data = list(
+  mouse_data = here("data", "processed", "05_nk_ilc.h5ad"),
+  human_data = here("data", "processed", "imm_neonatal_injury.rds")
+))
+```
+
+
+```{r}
+mm_nk_sce <- readH5AD(paths$data$mouse_data, reader = "R")
+assayNames(mm_nk_sce)[assayNames(mm_nk_sce) == "X"] <- "logcounts"
+
+mm_nk_milo_res <- run_milo(mm_nk_sce,
+  k = 30,
+  d = 20,
+  prop = 0.1,
+  reduced_dim = "X_pca_harmony",
+  sample = "sample_id",
+  condition = "genotype",
+  ref = "WT"
+)
+
+mm_nk_milo <- mm_nk_milo_res$milo
+mm_nk_da_res <- mm_nk_milo_res$da_res
+
+p1 <- plotNhoodGraphDA(mm_nk_milo,
+  mm_nk_da_res,
+  layout = "X_umap",
+  alpha = 0.05
+) + 
+  scale_fill_gradient2(name = "logFC", low = "#00AFBB", high = "#D32F2F")
+
+ggsave(file.path(paths$out$figures, "mm_nk_milo_da_umap.svg"), p1, width = 9, height = 6)
+
+saveRDS(mm_nk_milo, file.path(paths$out$outputs, "mm_nk_milo.rds"))
+write.csv(mm_nk_da_res, file.path(paths$out$tables, "mm_nk_milo_da_results.csv"), row.names = FALSE)
+```
+
+
+```{r}
+hs_immune_seurat <- readRDS(paths$data$human_data)
+hs_immune_seurat <- subset(hs_immune_seurat, subset = condition %in% c("BPD", "Term infant"))
+hs_immune_seurat@meta.data <- droplevels(hs_immune_seurat@meta.data)
+
+hs_immune_sce <- as.SingleCellExperiment(hs_immune_seurat)
+reducedDims(hs_immune_sce) <- list(
+  pca = Embeddings(hs_immune_seurat, "pca"),
+  umap = Embeddings(hs_immune_seurat, "umap"),
+  harmony = Embeddings(hs_immune_seurat, "harmony")
+)
+
+hs_immune_milo_res <- run_milo(hs_immune_sce,
+  k = 15,
+  d = 50,
+  prop = 0.05,
+  reduced_dim = "harmony",
+  sample = "dataset",
+  condition = "condition",
+  ref = "Term infant"
+)
+
+hs_immune_milo <- hs_immune_milo_res$milo
+hs_immune_da_res <- hs_immune_milo_res$da_res
+
+p4 <- plotNhoodGraphDA(hs_immune_milo,
+  hs_immune_da_res,
+  layout = "umap",
+  alpha = 0.05
+) + scale_fill_gradient2(name = "logFC", low = "#00AFBB", high = "#D32F2F")
+
+ggsave(file.path(paths$out$figures, "hs_immune_milo_da_umap.svg"), p4, width = 7, height = 5)
+
+saveRDS(hs_immune_milo, file.path(paths$out$outputs, "hs_immune_milo.rds"))
+write.csv(hs_immune_da_res, file.path(paths$out$tables, "hs_immune_milo_da_results.csv"), row.names = FALSE)
+```

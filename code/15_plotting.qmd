@@ -1,0 +1,322 @@
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(here)
+library(Seurat)
+library(plotthis)
+library(Nebulosa)
+
+set.seed(1)
+
+i_am("code/15_plotting.qmd")
+
+walk(file.path("code/r_utils",
+               c("import_h5ad.R", "project_helpers.R", "plotting_helpers.R")),
+     source)
+
+paths <- make_paths("15_plotting", data = list(
+  mouse_alldata = here("data", "processed", "06_combined_annotated.h5ad"),
+  mouse_immune = here("data", "processed", "01_immune.h5ad"),
+  mouse_epithelial = here("data", "processed", "03_epithelial.h5ad"),
+  mouse_endothelial = here("data", "processed", "02_endothelial.h5ad"),
+  mouse_nk = here("data", "processed", "05_nk_ilc.h5ad"),
+  human_immune = here("data", "processed", "imm_neonatal_injury.rds")
+))
+
+heatmap_palcolor <- rev(unname(plotthis::palette_this(palette = "rocket",
+                                                     type = "continuous",
+                                                     n = 100))[25:100])
+```
+
+
+```{r}
+mm_alldata_seurat <- h5ad_to_seurat(paths$data$mouse_alldata)
+
+plot_save_dimplot(
+  mm_alldata_seurat,
+  group_by = "lineage",
+  colors = mm_lineage_colors,
+  output_dir = paths$out$figures,
+  filename = "mm_alldata_lineage_umap.tiff",
+  split_by = "genotype",
+  width = 14, height = 7
+)
+
+mm_lineage_markers <- c(
+  "immune" = "Ptprc",
+  "endothelial" = "Cdh5",
+  "epithelial" = "Epcam",
+  "mesenchymal" = "Col6a3"
+)
+
+for (lin in names(mm_lineage_colors)) {
+
+  lin_color <- mm_lineage_colors[[lin]]
+  marker <- mm_lineage_markers[[lin]]
+
+  plot_save_featureplot(
+    mm_alldata_seurat,
+    features = marker,
+    colors = c("lightgrey", lin_color),
+    output_dir = paths$out$figures,
+    filename = paste0("mm_alldata_", lin, "_marker_umap.tiff"),
+    width = 8,
+    height = 7,
+    order = TRUE,
+    highlight = paste0("lineage == '", lin, "'"),
+    max_cutoff = 0.95,
+    highlight_stroke = 2
+  )
+}
+
+mm_alldata_df <- scale_marker_matrix(mm_alldata_seurat,
+  features = c("Ptprc", "Epcam", "Col6a3", "Cdh5"),
+  group_by = "lineage",
+  layer = "data"
+)
+
+p1 <- plotthis::Heatmap(
+  mm_alldata_df,
+  rows_by = "Feature",
+  columns_by = "lineage",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    lineage = list(
+      palcolor = mm_lineage_colors))
+)
+
+ggsave(file.path(paths$out$figures, "mm_alldata_lineage_marker_heatmap.svg"), p1, width = 8.5, height = 7)
+```
+
+
+```{r}
+mm_endo_seurat <- h5ad_to_seurat(paths$data$mouse_endothelial)
+
+plot_save_dimplot(
+  mm_endo_seurat,
+  group_by = "celltype",
+  colors = mm_endo_colors,
+  output_dir = paths$out$figures,
+  filename = "mm_endo_celltype_umap.tiff",
+  width = 7, height = 7
+)
+
+mm_endo_df <- scale_marker_matrix(mm_endo_seurat,
+  features = c("Nr2f2", "Vwf", "Slc6a2", "Gja5", "Bmx", "Prox1", "Pdpn", "Mki67", "Top2a", "Gpihbp1", "Aplnr", "Car4", "Apln"),
+  group_by = "celltype",
+  layer = "data"
+)
+
+p2 <- plotthis::Heatmap(
+  mm_endo_df,
+  rows_by = "Feature",
+  columns_by = "celltype",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    celltype = list(
+      palcolor = mm_endo_colors))
+)
+
+ggsave(file.path(paths$out$figures, "mm_endo_celltype_marker_heatmap.svg"), p2, width = 8.5, height = 7)
+```
+
+
+```{r}
+mm_immune_seurat <- h5ad_to_seurat(paths$data$mouse_immune)
+
+plot_save_dimplot(
+  mm_immune_seurat,
+  group_by = "celltype",
+  colors = mm_immune_colors,
+  pt_size = 1.25,
+  output_dir = paths$out$figures,
+  filename = "mm_immune_celltype_umap.tiff",
+  width = 9, height = 7
+)
+
+mm_immune_df <- scale_marker_matrix(mm_immune_seurat,
+  features = c("Cpa3", "Kit", "Tubb1", "Vwf", "Ppbp", "Gata3", "Il1rl1", "Areg", "Rorc", "Il22", "Il7r", "Cd200r3", "Mki67", "Top2a", "Siglecf", "Marco", "Pparg", "Siglech", "Bst2", "Ccr9", "Ccr7", "Fscn1", "Flt3", "Zbtb46", "Itgax", "Ccr2", "Plac8", "Fn1", "Ace", "Adgre4", "Cd300e", "Nr4a1", "S100a8", "Asprv1", "Retnlg", "Ly6g", "Cd3e", "Cd4", "Cd8a", "Ncr1", "Klrb1c", "Eomes", "Cd19", "Cd79a", "C1qa", "C1qb", "Folr2"),
+  group_by = "celltype",
+  layer = "data"
+)
+
+p3 <- plotthis::Heatmap(
+  mm_immune_df,
+  rows_by = "Feature",
+  columns_by = "celltype",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    celltype = list(
+      palcolor = mm_immune_colors))
+)
+
+ggsave(file.path(paths$out$figures, "mm_immune_celltype_marker_heatmap.svg"), p3, width = 13, height = 11)
+```
+
+
+```{r}
+mm_epithelial_seurat <- h5ad_to_seurat(paths$data$mouse_epithelial)
+
+plot_save_dimplot(
+  mm_epithelial_seurat,
+  group_by = "celltype",
+  colors = mm_epithelial_colors,
+  output_dir = paths$out$figures,
+  filename = "mm_epithelial_celltype_umap.tiff",
+  width = 7, height = 7
+)
+
+mm_epithelial_df <- scale_marker_matrix(mm_epithelial_seurat,
+  features = c("Cldn18", "Krt8", "Cldn4", "Aqp5", "Akap5", "Pdpn", "Muc1", "Scgb1a1", "Cyp2f2", "Foxj1", "Mki67", "Top2a", "Sftpc", "Sftpb", "Nkx2-1"),
+  group_by = "celltype",
+  layer = "data"
+)
+
+p4 <- plotthis::Heatmap(
+  mm_epithelial_df,
+  rows_by = "Feature",
+  columns_by = "celltype",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    celltype = list(
+      palcolor = mm_epithelial_colors))
+)
+
+ggsave(file.path(paths$out$figures, "mm_epithelial_celltype_marker_heatmap.svg"), p4, width = 8.5, height = 7)
+```
+
+
+```{r}
+mm_nk_seurat <- h5ad_to_seurat(paths$data$mouse_nk)
+
+plot_save_dimplot(
+  mm_nk_seurat,
+  group_by = "celltype",
+  colors = mm_nk_ilc_colors,
+  output_dir = paths$out$figures,
+  pt_size = 8,
+  filename = "mm_nk_celltype_umap.tiff",
+  width = 7, height = 7
+)
+
+nk_genes <- list(
+  "NK" = c("Ncr1", "Tbx21", "Eomes"),
+  "ILC2" = c("Gata3", "Rora"),
+  "mNK" = c("Itgam"),
+  "iNK" = c("Cd27"),
+  "ILC3" = c("Rorc", "Il7r")
+)
+
+mm_nk_sce <- as.SingleCellExperiment(mm_nk_seurat)
+
+
+iwalk(nk_genes, function(features, nm) {
+  joint <- length(features) > 1
+
+  p <- plot_density(
+    mm_nk_sce,
+    features = features,
+    reduction = "UMAP",
+    joint = joint,
+    raster = FALSE,
+    size = 4,
+    combine = FALSE
+  )
+
+  panel <- if (joint) p[[length(p)]] else p
+
+  ggsave(
+    file.path(paths$out$figures, paste0("mm_nk_", nm, "_marker_umap.svg")),
+    panel + theme_void() + theme(title = element_blank()) +
+    scale_color_viridis_c(option = "rocket", labels = function(x) sprintf("%.0e", x)),
+    width = 3.5, height = 3
+  )
+})
+
+
+mm_nk_markers <- scale_marker_matrix(mm_nk_seurat,
+  features = c("Gata3", "Rora", "Il1rl1", "Areg", "Rorc", "Il7r", "Ncr1", "Eomes", "Klrb1c", "Nkg7"),
+  group_by = "celltype",
+  layer = "data"
+)
+
+p5 <- plotthis::Heatmap(
+  mm_nk_markers,
+  rows_by = "Feature",
+  columns_by = "celltype",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    celltype = list(
+      palcolor = mm_nk_ilc_colors))
+)
+
+ggsave(file.path(paths$out$figures, "mm_nk_celltype_marker_heatmap.svg"), p5, width = 8.5, height = 7)
+```
+
+
+```{r}
+hs_immune_seurat <- readRDS(paths$data$human_immune)
+hs_immune_seurat <- subset(hs_immune_seurat, subset = condition %in% c("BPD", "Term infant"))
+hs_immune_seurat@meta.data <- droplevels(hs_immune_seurat@meta.data)
+
+plot_save_dimplot(
+  hs_immune_seurat,
+  group_by = "celltype",
+  colors = hs_immune_colors,
+  output_dir = paths$out$figures,
+  filename = "hs_immune_celltype_umap.tiff",
+  width = 9, height = 7
+)
+
+hs_immune_markers <- c("KLRF1", "GNLY", "NKG7", "GZMK", "KLRB1", "CD8A", "THEMIS", "CD1C", "FCER1A", "CLEC10A", "MARCO", "C1QA", "APOC1", "FCN1", "VCAN", "CD14", "FCGR3B", "CSF3R", "S100A8", "CPA3", "TPSAB1", "MS4A2", "HDC", "ENPP3", "MS4A1", "CD79A", "BANK1", "IRF7", "PLD4", "MZB1", "JCHAIN")
+
+hs_immune_df <- scale_marker_matrix(hs_immune_seurat,
+  features = hs_immune_markers,
+  group_by = "celltype",
+  layer = "data"
+)
+
+p6 <- plotthis::Heatmap(
+  hs_immune_df,
+  rows_by = "Feature",
+  columns_by = "celltype",
+  values_by = "value",
+  palcolor = heatmap_palcolor,
+  palreverse = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  show_column_names = FALSE,
+  column_annotation = list(
+    celltype = list(
+      palcolor = hs_immune_colors))
+)
+
+ggsave(file.path(paths$out$figures, "hs_immune_celltype_marker_heatmap.svg"), p6, width = 11, height = 9)
+```

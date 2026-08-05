@@ -1,0 +1,203 @@
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(here)
+library(Seurat)
+library(org.Mm.eg.db)
+library(scplotter)
+
+set.seed(1)
+
+i_am("code/14_glb1_endothelial_analysis.qmd")
+
+walk(file.path("code/r_utils",
+               c("import_h5ad.R", "project_helpers.R", "plotting_helpers.R")),
+     source)
+
+paths <- make_paths("14_glb1_endothelial_analysis", data = list(
+  mouse_data = here("data", "processed", "02_endothelial.h5ad")
+))
+```
+
+
+```{r}
+mm_seurat <- h5ad_to_seurat(paths$data$mouse_data)
+
+beta_gal <- FetchData(mm_seurat, vars = "Glb1", layer = "counts")[, 1]
+mm_seurat$glb1_expr <- ifelse(beta_gal > 0, "Glb1+", "Glb1-")
+
+glb1_expr_data <- FetchData(mm_seurat, vars = "Glb1", layer = "counts") |>
+  mutate(threshold = ifelse(Glb1 > 0, "above", "below"))
+
+p1 <- ggplot(glb1_expr_data, aes(x = Glb1, fill = threshold)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("above" = "#2b00ff",
+                               "below" = "#7a7a7a")) +
+  coord_cartesian(xlim = c(-0.5, 5)) +
+  theme_classic() +
+  labs(x = "Glb1 expression (counts)", y = "Number of cells") +
+  theme(axis.title = element_text(size = 16),
+        axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        legend.position = c(0.9, 0.9))
+
+ggsave(file.path(paths$out$figures, "endo_glb1_expr_barplot.svg"), p1, width = 6, height = 4)
+
+glb1_data <- tibble(
+  genotype = mm_seurat$genotype,
+  celltype = mm_seurat$celltype,
+  glb1_expr = mm_seurat$glb1_expr,
+  sample = mm_seurat$sample_id,
+  sex = mm_seurat$sex) |>
+  group_by(genotype, celltype, sample, sex) |>
+  summarise(glb1_pos = mean(glb1_expr == "Glb1+"), .groups = "drop") |>
+  pivot_wider(names_from = "celltype", values_from = "glb1_pos")
+
+write.csv(glb1_data, file.path(paths$out$tables, "glb1_expr_data.csv"), row.names = FALSE)
+```
+
+```{r}
+developmental_senescence_2025 <- c(
+  "Cdkn1a", "Cdkn2b", "Cdkn1b",
+  "Tgfb1", "Foxo3", "Foxo1", "Glb1"
+)
+
+msig_angiogenesis <- c(
+  "Apoh", "App", "Ccnd2", "Col3a1", "Col5a2", "Cxcl5", "Fgfr1", "Fstl1", "Itgav", "Jag1",
+  "Jag2", "Kcnj8", "Lpl", "Lrpap1", "Lum", "Msx1", "Nrp1", "Olr1", "Pdgfa", "Pf4",
+  "Pglyrp1", "Postn", "Prg2", "Ptk2", "S100a4", "Serpina5", "Slco2a1", "Spp1", "Stc1",
+  "Thbd", "Timp1", "Tnfrsf21", "Vav2", "Vcan", "Vegfa", "Vtn"
+)
+
+go_angiogenesis <- go_symbols("GO:0001525")
+
+go_sprouting <- go_symbols("GO:0002040")
+
+gene_sets <- list(
+  "developmental_senescence_2025" = developmental_senescence_2025,
+  "go_angiogenesis" = go_angiogenesis,
+  "go_sprouting" = go_sprouting,
+  "msig_angiogenesis" = msig_angiogenesis
+)
+
+mm_seurat <- AddModuleScore(mm_seurat,
+  features = gene_sets,
+  name = "module")
+
+mm_seurat$genotype <- factor(mm_seurat$genotype, levels = c("WT", "KO"))
+
+score_cols <- paste0("module", seq_along(gene_sets))
+colnames(mm_seurat@meta.data)[match(score_cols, colnames(mm_seurat@meta.data))] <- names(gene_sets)
+
+agg_mod_scores <- mm_seurat@meta.data |>
+  filter(celltype %in% c("gen_cap", "prolif gen_cap", "arterial", "aerocytes")) |>
+  group_by(celltype, genotype, sample_id, sex) |>
+  summarise(across(all_of(names(gene_sets)), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
+
+write.csv(agg_mod_scores, file.path(paths$out$tables, "aggregate_module_scores.csv"), row.names = FALSE)
+
+for (name in names(gene_sets)) {
+  p <- FeatureStatPlot(mm_seurat,
+    features = name,
+    plot_type = "dim",
+    facet_by = "genotype",
+    order = "high-top",
+    upper_quantile = 0.95,
+    palette = "Spectral",
+    bg_cutoff = NULL,
+    bg_color = NA,
+    theme = "theme_void",
+    legend.position = "right"
+  ) &
+    theme(plot.title = element_blank(),
+          strip.text = element_blank())
+
+  ggsave(file.path(paths$out$figures, paste0(name, "_featureplot.tiff")),
+         p, dpi = 600, width = 14, height = 6)
+
+  pb_data <- list()
+
+  for (ct in unique(mm_seurat$celltype)) {
+    pb <- mm_seurat@meta.data |>
+      filter(celltype == ct) |>
+      group_by(sample_id, genotype, glb1_expr, sex) |>
+      summarise(score = mean(.data[[name]], na.rm = TRUE), .groups = "drop")
+    pb_data[[ct]] <- pb
+  }
+
+  bind_rows(pb_data, .id = "celltype") |>
+    group_split(celltype) |>
+    walk(\(d) {
+      d |>
+        mutate(X = if_else(glb1_expr == "Glb1+", 1, 2),
+               col = paste(genotype, sample_id, sep = "_")) |>
+        dplyr::select(X, col, score) |>
+        pivot_wider(names_from = "col", values_from = "score") |>
+        arrange(X) |>
+        write.csv(file.path(paths$out$tables,
+                            paste0(name, "_",
+                                   gsub("[^A-Za-z0-9]+", "_", d$celltype[1]),
+                                   "_module_score.csv")),
+                  row.names = FALSE)
+    })
+}
+```
+
+```{r}
+pb_all <- mm_seurat@meta.data |>
+  filter(celltype %in% c("gen_cap", "prolif gen_cap", "arterial", "aerocytes")) |>
+  group_by(celltype, sample_id, genotype, glb1_expr) |>
+  summarise(across(all_of(names(gene_sets)), \(x) mean(x, na.rm = TRUE)), .groups = "drop") |>
+  pivot_longer(all_of(names(gene_sets)), names_to = "module", values_to = "score")
+
+pb_wider <- pb_all |>
+  pivot_wider(id_cols = c(celltype, module, sample_id, genotype),
+              names_from = "glb1_expr", values_from = "score") |>
+  tidyr::drop_na(`Glb1+`, `Glb1-`) |>
+  mutate(diff = `Glb1+` - `Glb1-`)
+
+paired_res <- pb_wider |>
+  group_by(celltype, module, genotype) |>
+  summarise(n_samples = n(),
+            broom::tidy(wilcox.test(`Glb1+`, `Glb1-`, paired = TRUE, conf.int = TRUE)), .groups = "drop") |>
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+inter_res <- pb_wider |>
+  group_by(celltype, module) |>
+  filter(n_distinct(genotype) == 2, min(table(genotype)) >= 3) |>
+  summarise(n_samples = n(),
+            broom::tidy(wilcox.test(diff ~ genotype, conf.int = TRUE)), .groups = "drop") |>
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+write.csv(bind_rows(paired_res, inter_res, .id = "test"), file.path(paths$out$tables, "glb1_module_score_stats.csv"), row.names = FALSE)
+```
+
+```{r}
+endo_cts <- c("gen_cap", "prolif gen_cap", "arterial", "aerocytes")
+
+mm_sub <- subset(mm_seurat, subset = celltype %in% endo_cts)
+mm_sub$celltype <- factor(mm_sub$celltype, levels = endo_cts)
+
+p2 <- FeatureStatPlot(mm_sub,
+  plot_type = "heatmap",
+  ident = c("glb1_expr", "genotype"),
+  columns_split_by = "celltype",
+  features = names(gene_sets),
+  palette = "RdBu",
+  show_column_names = FALSE,
+  cluster_columns = FALSE,
+  column_annotation = list(
+    celltype = list(palcolor = c("aerocytes" = "#f14f7b",
+                                 "arterial" = "#33658A",
+                                 "gen_cap" = "#56c5cc",
+                                 "prolif gen_cap" = "#f7aa1c")),
+    genotype = list(palcolor = c("WT" = "#00AFBB", "KO" = "#D32F2F")),
+    glb1_expr = list(palcolor = c("Glb1+" = "#2b00ff", "Glb1-" = "#7a7a7a")),
+    glb1_expr_genotype = list(params = FALSE)
+  )
+)
+
+ggsave(file.path(paths$out$figures, "glb1_expr_module_score_heatmap.svg"), p2, width = 12, height = 5)
+```

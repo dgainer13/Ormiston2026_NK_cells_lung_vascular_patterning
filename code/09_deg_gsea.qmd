@@ -1,0 +1,195 @@
+```{r}
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(here)
+library(purrr)
+library(MAST)
+library(lme4)
+library(data.table)
+library(enrichplot)
+
+set.seed(1)
+
+i_am("code/09_deg_gsea.qmd")
+
+walk(file.path("code/r_utils",
+               c("import_h5ad.R", "run_pathway_analysis.R", "plotting_helpers.R", "project_helpers.R")),
+     source)
+
+paths <- make_paths("09_deg_gsea", data = list(
+  mouse_data = here("data", "processed", "06_combined_annotated.h5ad"),
+  human_data = here("data", "processed", "alldata_neonatal_injury.rds")
+))
+```
+
+
+```{r}
+mm_seurat <- h5ad_to_seurat(paths$data$mouse_data)
+```
+
+```{r}
+mm_sub <- subset(mm_seurat, subset = celltype == "gen_cap")
+markers <- FindMarkers(mm_sub,
+                       test.use = "MAST",
+                       ident.1 = "KO",
+                       ident.2 = "WT",
+                       group.by = "genotype",
+                       min.pct = 0.1,
+                       latent.vars = "sex",
+                       logfc.threshold = 0)
+markers$primerid <- rownames(markers)
+markers$p_val_adj <- p.adjust(markers$p_val, method = "fdr")
+
+write.csv(markers, file.path(paths$out$tables, "mm_gen_cap_markers.csv"), row.names = FALSE)
+```
+
+```{r}
+mm_keyvals <- assign_cols(markers, logfc_thresh = 0.25, p_val_adj_thresh = 0.05)
+
+plot_save_volcano(markers,
+  col_custom = mm_keyvals,
+  xlim = c(-2.05, 1.5),
+  ylim = c(0, NA),
+  select_lab = c("Cmtm8", "Glb1", "Cd93", "Itgb1",
+                "Ap2b1", "Ptms", "Zbtb16", "Nr4a1"),
+  filename = "mm_gen_cap_volcano.svg",
+  pseudo_log = FALSE,
+  width = 11,
+  output_dir = paths$out$figures)
+```
+
+
+```{r}
+mm_pathway_res <- run_pathway_analysis(markers,
+                                       collection = "GO",
+                                       analysis = "GSEA",
+                                       org = "mouse",
+                                       do_simplify = FALSE)
+
+p1 <- plot_gsea_res(mm_pathway_res, top_n = 15)
+ggsave(file.path(paths$out$figures, "mm_gen_cap_gsea_go.svg"), p1, width = 6, height = 5)
+
+mm_gsea_pathways <- c("cellular response to vascular endothelial growth factor stimulus", "positive regulation of ERK1 and ERK2 cascade", "regulation of MAPK cascade")
+
+mm_gsea_res <- mm_pathway_res$result
+
+mm_gsea_pathways <- mm_gsea_res@result$ID[match(mm_gsea_pathways, mm_gsea_res@result$Description)]
+
+p2 <- gseaplot2(mm_pathway_res$result, geneSetID = mm_gsea_pathways)
+ggsave(file.path(paths$out$figures, "mm_gen_cap_gsea_go_enrichment.svg"), p2, width = 10, height = 8)
+
+saveRDS(mm_pathway_res, file.path(paths$out$outputs, "mm_gen_cap_gsea_go.rds"))
+```
+
+
+```{r}
+hs_seurat <- readRDS(paths$data$human_data)
+hs_sub <- subset(hs_seurat, subset = celltype == "NK Cell" &
+                   condition %in% c("Term infant", "BPD"))
+hs_sub@meta.data <- droplevels(hs_sub@meta.data)
+hs_expr_mat <- as.matrix(GetAssayData(hs_sub, assay = "SCT", layer = "data"))
+hs_meta <- hs_sub@meta.data
+```
+
+
+```{r}
+sca <- FromMatrix(hs_expr_mat, cData = hs_meta)
+sca <- sca[which(freq(sca) > 0.1), ]
+colData(sca)$condition <- relevel(colData(sca)$condition, ref = "Term infant")
+```
+
+
+```{r}
+options(mc.cores = 6)
+RhpcBLASctl::blas_set_num_threads(1)
+hs_zlm <- zlm(~ condition + age + (1 | dataset),
+              sca,
+              method = "glmer",
+              ebayes = FALSE,
+              parallel = TRUE)
+
+hs_sum <- summary(hs_zlm,
+                  doLRT = "conditionBPD",
+                  parallel = TRUE)
+
+dt <- hs_sum$datatable
+
+fc <- merge(
+  dt[contrast == "conditionBPD" &
+       component == "H", .(primerid, `Pr(>Chisq)`)],
+  dt[contrast == "conditionBPD" &
+       component == "logFC", .(primerid, coef, ci.hi, ci.lo)],
+  by = "primerid"
+)
+
+fc <- fc[!is.nan(coef)]
+fc <- fc[, fdr := p.adjust(`Pr(>Chisq)`, method = "fdr")]
+
+setnames(fc, c("coef", "fdr", "Pr(>Chisq)"), c("avg_log2FC", "p_val_adj", "p_val"))
+fc$avg_log2FC <- fc$avg_log2FC / log(2)
+
+write.csv(fc, file.path(paths$out$tables, "hs_nk_bpd_markers.csv"), row.names = FALSE)
+```
+
+
+```{r}
+hs_keyvals <- assign_cols(fc, logfc_thresh = 0.25, p_val_adj_thresh = 0.05)
+
+plot_save_volcano(fc,
+  col_custom = hs_keyvals,
+  xlim = c(-1.5, 1.5),
+  ylim = c(0, NA),
+  select_lab = c("GZMM", "GZMB", "GZMA", "GZMH", "NKG7", "PRF1", "HCST", "CD7"),
+  filename = "hs_nk_bpd_volcano.svg",
+  flip = FALSE,
+  width = 6,
+  pseudo_log = FALSE,
+  output_dir = paths$out$figures)
+```
+
+
+```{r}
+hs_gsea_go <- run_pathway_analysis(fc,
+                                   collection = "GO",
+                                   analysis = "GSEA",
+                                   org = "human",
+                                   do_simplify = FALSE)
+
+hs_ora_go <- run_pathway_analysis(fc,
+                                  collection = "GO",
+                                  analysis = "ORA",
+                                  org = "human")
+
+saveRDS(hs_gsea_go, file.path(paths$out$outputs, "hs_nk_bpd_gsea_go.rds"))
+saveRDS(hs_ora_go, file.path(paths$out$outputs, "hs_nk_bpd_ora_go.rds"))
+```
+
+
+```{r}
+hs_gsea_pathways <- c("cell killing", "leukocyte mediated cytotoxicity",
+                      "cellular response to transforming growth factor beta stimulus",
+                      "leukocyte mediated immunity")
+hs_gsea_res <- hs_gsea_go$result
+
+hs_gsea_pathways <- hs_gsea_res@result$ID[match(hs_gsea_pathways, hs_gsea_res@result$Description)]
+
+p3 <- gseaplot2(hs_gsea_res, geneSetID = hs_gsea_pathways)
+
+ggsave(file.path(paths$out$figures, "hs_nk_bpd_gsea_go.svg"), p3, width = 10, height = 8)
+
+hs_ora_pathways <- c("cell killing", "leukocyte mediated cytotoxicity", "cytolytic granule",
+                     "killing of cells of another organism", "cell chemotaxis",
+                     "positive regulation of cytokine production involved in immune response")
+hs_ora_res <- hs_ora_go$result
+genelist_log2fc <- fc$avg_log2FC
+names(genelist_log2fc) <- fc$primerid
+
+p4 <- heatplot(hs_ora_res,
+         showCategory = hs_ora_pathways,
+         foldChange = genelist_log2fc) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) + 
+  coord_flip()
+
+ggsave(file.path(paths$out$figures, "hs_nk_bpd_ora_go.svg"), p4, width = 5, height = 8)
+```

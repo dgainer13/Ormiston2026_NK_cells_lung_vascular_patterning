@@ -1,0 +1,294 @@
+
+```{r}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(monocle3)
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(here)
+library(Seurat)
+library(patchwork)
+
+set.seed(1)
+
+i_am("code/13_epithelial_analysis.qmd")
+
+walk(file.path("code/r_utils",
+               c("pseudotime_diffexp.R", "plotting_helpers.R", "run_pathway_analysis.R", "import_h5ad.R", "project_helpers.R")),
+     source)
+
+
+paths <- make_paths("13_epithelial_analysis", data = list(
+  mouse_data = here("data", "processed", "03_epithelial.h5ad")
+))
+```
+
+```{r}
+seurat <- h5ad_to_seurat(paths$data$mouse_data)
+
+marker_list <- list()
+for (ct in c("at1", "at2")) {
+  message("Processing: ", ct)
+  s <- subset(seurat, subset = celltype == ct)
+  markers <- FindMarkers(s,
+    test.use = "MAST",
+    ident.1 = "KO",
+    ident.2 = "WT",
+    group.by = "genotype",
+    latent.vars = "sex",
+    min.pct = 0.1,
+    logfc.threshold = 0
+  )
+  markers$primerid <- rownames(markers)
+  markers$p_val_adj <- p.adjust(markers$p_val, method = "fdr")
+  write.csv(markers, file.path(paths$out$tables, paste0("mm_", ct, "_markers.csv")), row.names = FALSE)
+  marker_list[[ct]] <- markers
+}
+```
+
+```{r}
+at1_keyvals <- assign_cols(marker_list$at1, logfc_thresh = 0.25, p_val_adj_thresh = 0.05)
+
+plot_save_volcano(marker_list$at1,
+  col_custom = at1_keyvals,
+  xlim = c(-1, 1.25),
+  ylim = c(0, NA),
+  select_lab = c("Txnip", "Sparc", "Tgfbr2", "Igfbp7", "Crlf1", "Mcl1", "Clk1"),
+  filename = "mm_at1_volcano.svg",
+  output_dir = paths$out$figures)
+
+at2_keyvals <- assign_cols(marker_list$at2, logfc_thresh = 0.25, p_val_adj_thresh = 0.05)
+
+plot_save_volcano(marker_list$at2,
+  col_custom = at2_keyvals,
+  xlim = c(-1, 1.25),
+  ylim = c(0, NA),
+  select_lab = c("Sftpc", "Eif4a2", "Ap2b1", "Spink5", "Tgfbr2", "Trf", "Slc10a6", "Bmp1"),
+  filename = "mm_at2_volcano.svg",
+  output_dir = paths$out$figures)
+```
+
+```{r}
+at_gsea_reactome <- map(marker_list, function(markers) {
+  run_pathway_analysis(markers,
+                       collection = "Reactome",
+                       analysis = "GSEA",
+                       org = "mouse",
+                       do_simplify = FALSE)
+})
+
+for (ct in names(at_gsea_reactome)) {
+  gsea_res <- at_gsea_reactome[[ct]]
+  p_gsea <- plot_gsea_res(gsea_res, top_n = 15)
+  ggsave(file.path(paths$out$figures, paste0("mm_", ct, "_gsea_reactome.svg")), p_gsea, width = 10, height = 6)
+  saveRDS(gsea_res, file.path(paths$out$outputs, paste0("mm_", ct, "_gsea_reactome_res.rds")))
+}
+
+mm_at_reac_logfc <- map(marker_list, function(markers) {
+  m <- bitr(markers$primerid,
+            fromType = "SYMBOL", toType = "ENTREZID",
+            OrgDb = org.Mm.eg.db, drop = TRUE)
+
+  markers |>
+    inner_join(m, by = c("primerid" = "SYMBOL")) |>
+    group_by(ENTREZID) |>
+    slice_max(abs(avg_log2FC), n = 1, with_ties = FALSE) |>
+    ungroup() |>
+    dplyr::select(ENTREZID, avg_log2FC) |>
+    deframe()
+})
+
+p1 <- viewPathway("TGF-beta receptor signaling activates SMADs",
+  readable = TRUE,
+  foldChange = mm_at_reac_logfc$at1,
+  organism = "mouse",
+  keyType = "ENTREZID") + 
+  scale_color_gradient(low = "blue", high = "red", name = "log2FC")
+
+ggsave(file.path(paths$out$figures, "mm_at1_tgfbr2_reactome.svg"), p1, width = 8, height = 6)
+```
+
+```{r}
+sce <- readH5AD(paths$data$mouse_data, reader = "R")
+sce <- sce[, sce$celltype %in% c("at1", "at2", "prolif at2", "transitional")]
+
+gene_meta <- data.frame(
+  gene_short_name = rownames(sce),
+  row.names = rownames(sce)
+)
+```
+
+
+```{r}
+cds <- new_cell_data_set(
+  expression_data = assay(sce, "counts"),
+  cell_metadata = colData(sce),
+  gene_metadata = gene_meta
+)
+```
+
+
+```{r}
+cds <- preprocess_cds(cds, norm_method = "log")
+reducedDims(cds)$UMAP <- reducedDim(sce, "X_umap")
+
+cds <- cluster_cells(cds, reduction_method = "UMAP")
+cds <- learn_graph(cds,
+  close_loop = FALSE,
+  use_partition = FALSE,
+  learn_graph_control = list(minimal_branch_len = 15, ncenter = 300)
+)
+
+plot_cells(cds, color_cells_by = "celltype",
+           label_cell_groups = TRUE,
+           cell_stroke = 3)
+
+cds <- order_cells(cds)
+
+p2 <- plot_cells(cds,
+  color_cells_by = "pseudotime",
+  label_cell_groups = FALSE,
+  label_leaves = FALSE,
+  label_branch_points = FALSE,
+  cell_stroke = 1,
+) + 
+  scale_color_viridis_c(option = "rocket")
+
+ggsave(file.path(paths$out$figures, "mm_epithelial_pseudotime_umap.tiff"), p2, width = 12, height = 8)
+
+save_monocle_objects(cds, file.path(paths$out$outputs, "mouse_epithelial_cds"))
+```
+
+
+```{r}
+at1_cds <- choose_graph_segments(cds,
+  clear_cds = FALSE,
+  return_list = TRUE
+)
+at1_cds <- cds[, at1_cds$cells]
+
+at1_cds <- cluster_cells(at1_cds)
+
+at1_cds <- learn_graph(at1_cds,
+  close_loop = FALSE,
+  learn_graph_control = list(minimal_branch_len = 20, ncenter = 300)
+)
+
+at1_cds <- order_cells(at1_cds)
+
+p3 <- plot_cells(at1_cds,
+  color_cells_by = "pseudotime",
+  label_cell_groups = FALSE,
+  label_leaves = FALSE,
+  label_branch_points = FALSE,
+  cell_stroke = 2
+) + 
+  scale_color_viridis_c(option = "rocket")
+
+ggsave(file.path(paths$out$figures, "mm_at1_pseudotime_umap.tiff"), p3, width = 9, height = 8)
+
+at1_cds <- estimate_size_factors(at1_cds)
+save_monocle_objects(at1_cds, file.path(paths$out$outputs, "mouse_at1_cds"))
+```
+
+
+```{r}
+colData(at1_cds)$genotype <- relevel(colData(at1_cds)$genotype, ref = "WT")
+
+at1_pt_de_res <- run_pseudotime_diff_exp(at1_cds,
+  model_formula_str = "~ genotype * pseudotime",
+  min_pct = 0.1,
+  cores = 2,
+  expression_family = "quasipoisson"
+)
+
+at1_pt_de_res$de_res_sig
+
+write.csv(at1_pt_de_res$de_res_allgenes,
+          file.path(paths$out$tables, "mm_at1_pseudotime_genotype_de_results.csv"), row.names = FALSE)
+
+at1_genes <- c("Tgfbr2", "Lamc2", "Col4a1", "Dag1")
+
+at1_plots <- map(at1_genes, ~ plot_geneexpr_pt(at1_cds, .x))
+p5 <- wrap_plots(at1_plots, ncol = 2) +
+  plot_layout(guides = "collect")
+
+ggsave(file.path(paths$out$figures, "mm_at1_genes_pseudotime.svg"), p5, width = 12, height = 8)
+
+at1_pseudotime_genotype_gsea <- at1_pt_de_res$de_res_allgenes |>
+  filter(term == "genotypeKO:pseudotime") |>
+  rename(primerid = gene_id) |>
+  run_pathway_analysis(collection = "Reactome",
+                       analysis = "GSEA",
+                       org = "mouse",
+                       score_col = "test_val")
+
+saveRDS(at1_pseudotime_genotype_gsea, file.path(paths$out$outputs, "mm_at1_pseudotime_genotype_gsea.rds"))
+```
+
+
+```{r}
+at2_cds <- choose_graph_segments(cds,
+  clear_cds = FALSE,
+  return_list = TRUE
+)
+at2_cds <- cds[, at2_cds$cells]
+
+at2_cds <- cluster_cells(at2_cds)
+
+at2_cds <- learn_graph(at2_cds,
+  close_loop = FALSE,
+  use_partition = FALSE,
+  learn_graph_control = list(minimal_branch_len = 20, ncenter = 500)
+)
+
+at2_cds <- order_cells(at2_cds)
+
+p4 <- plot_cells(at2_cds,
+  color_cells_by = "pseudotime",
+  label_cell_groups = FALSE,
+  label_leaves = FALSE,
+  label_branch_points = FALSE,
+  cell_stroke = 1.5
+) +
+  scale_color_viridis_c(option = "rocket")
+
+ggsave(file.path(paths$out$figures, "mm_at2_pseudotime_umap.tiff"), p4, width = 10, height = 8)
+
+at2_cds <- estimate_size_factors(at2_cds)
+save_monocle_objects(at2_cds, file.path(paths$out$outputs, "mouse_at2_cds"))
+```
+
+
+```{r}
+colData(at2_cds)$genotype <- relevel(colData(at2_cds)$genotype, ref = "WT")
+
+at2_pt_de_res <- run_pseudotime_diff_exp(at2_cds,
+  model_formula_str = "~ genotype * pseudotime",
+  min_pct = 0.1,
+  cores = 2,
+  expression_family = "quasipoisson"
+)
+
+write.csv(at2_pt_de_res$de_res_allgenes,
+          file.path(paths$out$tables, "mm_at2_pseudotime_genotype_de_results.csv"), row.names = FALSE)
+
+at2_genes <- c("Tgfbr2", "Cdh1")
+
+at2_plots <- map(at2_genes, ~ plot_geneexpr_pt(at2_cds, .x))
+p6 <- wrap_plots(at2_plots, ncol = 1) +
+  plot_layout(guides = "collect")
+
+ggsave(file.path(paths$out$figures, "mm_at2_genes_pseudotime.svg"), p6, width = 6, height = 8)
+
+at2_pseudotime_genotype_gsea <- at2_pt_de_res$de_res_allgenes |>
+  filter(term == "genotypeKO:pseudotime") |>
+  rename(primerid = gene_id) |>
+  run_pathway_analysis(collection = "Reactome",
+                       analysis = "GSEA",
+                       org = "mouse",
+                       score_col = "test_val")
+
+saveRDS(at2_pseudotime_genotype_gsea, file.path(paths$out$outputs, "mm_at2_pseudotime_genotype_gsea.rds"))
+```

@@ -1,0 +1,237 @@
+
+```{r}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(here)
+library(Seurat)
+library(scplotter)
+library(circular)
+library(cowplot)
+library(tricycle)
+
+set.seed(1)
+
+i_am("code/12_cell_cycle_analysis.qmd")
+
+walk(file.path("code/r_utils",
+               c("import_h5ad.R", "gconvert_to_ensembl.R", "project_helpers.R")),
+     source)
+
+
+paths <- make_paths("12_cell_cycle_analysis", data = list(
+  mouse_sce = here("data", "processed", "06_combined_annotated.h5ad"),
+  mouse_seurat = here("data", "processed", "02_endothelial.h5ad")
+))
+
+retrieved_cpal <- colorRampPalette(c(
+  "#2E22EA",
+  "#9E3DFB",
+  "#F86BE2",
+  "#FCCE7B",
+  "#C4E416",
+  "#4BBA0F",
+  "#447D87",
+  "#2C24E9"
+))
+```
+
+
+```{r}
+mm_sce <- readH5AD(paths$data$mouse_sce, reader = "R")
+assayNames(mm_sce)[assayNames(mm_sce) == "X"] <- "logcounts"
+
+mm_sce <- symbol_to_ensembl(mm_sce, rownames(mm_sce))
+
+mm_sce <- project_cycle_space(mm_sce)
+mm_sce <- estimate_cycle_position(mm_sce)
+
+top2a_idx <- which(rowData(mm_sce)$gene == "Top2a")
+top2a_expr <- assay(mm_sce, "logcounts")[top2a_idx, ]
+
+
+p1 <- fit_periodic_loess(mm_sce$tricyclePosition,
+  top2a_expr,
+  plot = TRUE,
+  fig.title = "Top2a expression along \u03b8",
+  ylab = "Top2a expression")
+p1$fig + theme_classic()
+```
+
+
+```{r}
+mm_sce <- estimate_Schwabe_stage(mm_sce,
+  gname.type = "ENSEMBL",
+  species = "mouse")
+
+mm_sce$order_key <- ifelse(is.na(mm_sce$CCStage), 0, 1)
+
+p2 <- scater::plotReducedDim(mm_sce,
+  dimred = "tricycleEmbedding",
+  colour_by = "CCStage",
+  order_by = "order_key") +
+  theme_classic() + 
+  scale_color_manual(values = c(
+    "G1.S" = "#2E22EA",
+    "S" = "#9E3DFB",
+    "G2" = "#F86BE2",
+    "G2.M" = "#FCCE7B",
+    "M.G1" = "#4BBA0F",
+    na.value = "black")) +
+  labs(
+    x = "Projected PC1",
+    y = "Projected PC2",
+    title = paste0("Projected cell cycle space (n = ", ncol(mm_sce), ")")
+  )
+
+p2@layers[[1]]$aes_params$alpha <- 1
+show(p2)
+```
+
+
+```{r}
+plot_ccposition_den(mm_sce$tricyclePosition,
+  mm_sce$genotype, "genotype",
+  fig.title = "All cells - KDE of \u03b8") +
+  theme_bw(base_size = 20)
+
+plot_ccposition_den(mm_sce$tricyclePosition,
+  mm_sce$genotype, "genotype",
+  type = "circular",
+  fig.title = "All cells - KDE of \u03b8") +
+  theme_bw(base_size = 20)
+```
+
+
+```{r}
+mm_seurat <- h5ad_to_seurat(paths$data$mouse_seurat)
+mm_seurat$genotype <- factor(mm_seurat$genotype, levels = c("WT", "KO"))
+
+idx <- match(colnames(mm_seurat), colnames(mm_sce))
+stopifnot(!anyNA(idx), 
+          identical(colnames(mm_sce)[idx], colnames(mm_seurat)))
+
+mm_seurat$tricyclePosition <- mm_sce$tricyclePosition[idx]
+
+p3 <- FeatureStatPlot(mm_seurat,
+  features = "tricyclePosition",
+  plot_type = "dim",
+  facet_by = "genotype",
+  pt_size = 1,
+  pt_alpha = 1,
+  order = "as-is",
+  palcolor = retrieved_cpal(100),
+  lower_cutoff = 0,
+  upper_cutoff = 2 * pi,
+  bg_cutoff = NULL,
+  bg_color = NA,
+  theme = "theme_void",
+  legend.position = "none"
+) &
+  theme(plot.title = element_blank())
+
+p3_legend <- circle_scale_legend(
+  text.size = 5,
+  alpha = 0.9)
+
+plot_grid(p3,
+  p3_legend,
+  ncol = 2,
+  rel_widths = c(1, 0.1)
+)
+
+ggsave(file.path(paths$out$figures, "mm_endo_cctheta_umap.tiff"), p3, width = 14, height = 6)
+ggsave(file.path(paths$out$figures, "mm_endo_cctheta_umap_legend.svg"), p3_legend, width = 3, height = 3)
+```
+
+
+```{r}
+cc_dist <- tibble(
+  pos = mm_seurat$tricyclePosition,
+  ct = mm_seurat$celltype,
+  genotype = mm_seurat$genotype,
+  sample = mm_seurat$sample_id
+) |>
+  mutate(cc_stage = case_when(
+    pos >= 0.5 * pi & pos <= 1.5 * pi ~ "proliferating",
+    TRUE ~ "quiescent"
+  )) |>
+  group_by(genotype, ct, sample) |>
+  summarise(percent_prolif = mean(cc_stage == "proliferating") * 100,
+    .groups = "drop") |>
+  mutate(percent_quiescent = 100 - percent_prolif)
+
+write.csv(cc_dist, file.path(paths$out$tables, "endo_cc_stage_distribution.csv"), row.names = FALSE)
+```
+
+
+```{r}
+mm_gcap_sce <- mm_sce[, mm_sce$celltype %in% c("gen_cap", "prolif gen_cap")]
+
+for (ct in unique(mm_gcap_sce$celltype)) {
+  sub <- mm_gcap_sce[, mm_gcap_sce$celltype == ct]
+  p4 <- plot_ccposition_den(sub$tricyclePosition,
+    sub$genotype, "genotype",
+    fig.title = paste0("Kernel density of \u03b8 - ", ct)) +
+    theme_bw(base_size = 20)
+  ggsave(file.path(paths$out$figures, paste0("mm_ccposition_den_", ct, ".svg")), p4, width = 18, height = 8)
+  show(p4)
+}
+
+for (ct in unique(mm_gcap_sce$celltype)) {
+  sub <- mm_gcap_sce[, mm_gcap_sce$celltype == ct]
+  p4 <- plot_ccposition_den(sub$tricyclePosition,
+    sub$genotype, "genotype", type = "circular",
+    fig.title = paste0("Kernel density of \u03b8 - ", ct)) +
+    theme_bw(base_size = 20)
+  ggsave(file.path(paths$out$figures, paste0("mm_ccposition_den_circular_", ct, ".svg")), p4, width = 8, height = 8)
+  show(p4)
+}
+```
+
+
+```{r}
+pos <- mm_gcap_sce$tricyclePosition
+genotype <- mm_gcap_sce$genotype
+
+mm_gcap_sce$celltype <- droplevels(mm_gcap_sce$celltype)
+ct <- mm_gcap_sce$celltype
+
+dat <- data.frame(
+  pos = pos,
+  celltype = ct,
+  genotype = genotype
+)
+
+run_watson_test <- function(ct, data = dat) {
+  sub_data <- data[data$celltype == ct &
+    data$genotype %in% c("WT", "KO") &
+    !is.na(data$pos), ]
+
+  positions <- split(sub_data$pos, sub_data$genotype)
+
+  positions <- lapply(
+    positions[c("WT", "KO")],
+    circular,
+    units = "radians",
+    modulo = "2pi"
+  )
+
+  watson.two.test(
+    positions$WT,
+    positions$KO,
+    alpha = 0.05
+  )
+}
+
+watson_res <- setNames(
+  lapply(c("gen_cap", "prolif gen_cap"), run_watson_test),
+  c("gen_cap", "prolif gen_cap")
+)
+write.csv(tibble(
+  celltype = names(watson_res),
+  test_statistic = sapply(watson_res, function(x) x$statistic)),
+  file.path(paths$out$tables, "watson_test_results.csv"), row.names = FALSE)
+```

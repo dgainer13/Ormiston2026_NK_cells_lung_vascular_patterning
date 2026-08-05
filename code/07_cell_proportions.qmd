@@ -1,0 +1,114 @@
+
+```{r}
+library(speckle)
+library(ggplot2)
+library(here)
+library(purrr)
+library(Seurat)
+library(tidyverse)
+
+set.seed(1)
+
+i_am("code/07_cell_proportions.qmd")
+
+walk(file.path("code/r_utils",
+               c("import_h5ad.R", "project_helpers.R", "plotting_helpers.R")),
+     source)
+
+paths <- make_paths("07_cell_proportions", data = list(
+  mouse_imm = here("data", "processed", "01_immune.h5ad"),
+  mouse_epi = here("data", "processed", "03_epithelial.h5ad"),
+  human_imm = here("data", "processed", "imm_neonatal_injury.rds")
+))
+```
+
+
+```{r}
+mm_seurat_imm <- h5ad_to_seurat(paths$data$mouse_imm)
+mm_seurat_imm$genotype <- factor(mm_seurat_imm$genotype, levels = c("WT", "KO"))
+mm_seurat_imm@meta.data <- droplevels(mm_seurat_imm@meta.data)
+
+mm_imm_props <- propeller(mm_seurat_imm,
+  clusters = mm_seurat_imm$celltype,
+  sample = mm_seurat_imm$sample_id,
+  group = mm_seurat_imm$genotype)
+
+write.csv(mm_imm_props, file.path(paths$out$tables, "mm_imm_props.csv"), row.names = FALSE)
+
+p1 <- plotCellTypeProps(mm_seurat_imm,
+  clusters = mm_seurat_imm$celltype,
+  sample = mm_seurat_imm$genotype
+) +
+  scale_x_discrete(limits = c("WT", "KO")) +
+  theme_classic()
+
+ggsave(file.path(paths$out$figures, "mm_imm_props.svg"), p1, height = 8, width = 6)
+
+```
+
+```{r}
+mm_seurat_epi <- h5ad_to_seurat(paths$data$mouse_epi)
+mm_seurat_epi$genotype <- factor(mm_seurat_epi$genotype, levels = c("WT", "KO"))
+mm_seurat_epi@meta.data <- droplevels(mm_seurat_epi@meta.data)
+
+mm_epi_props <- propeller(mm_seurat_epi,
+  clusters = mm_seurat_epi$celltype,
+  sample = mm_seurat_epi$sample_id,
+  group = mm_seurat_epi$genotype)
+
+write.csv(mm_epi_props, file.path(paths$out$tables, "mm_epi_props.csv"), row.names = FALSE)
+
+p2 <- plotCellTypeProps(mm_seurat_epi,
+  clusters = mm_seurat_epi$celltype,
+  sample = mm_seurat_epi$genotype
+) +
+  scale_x_discrete(limits = c("WT", "KO")) +
+  theme_classic()
+  
+ggsave(file.path(paths$out$figures, "mm_epi_props.svg"), p2, height = 8, width = 6)
+
+```
+
+```{r}
+mm_nk_ilc_props <- mm_imm_props |>
+  filter(BaselineProp.clusters %in% c("nks", "ilc2s", "ilc3s")) |>
+  pivot_longer(cols = c(PropMean.WT, PropMean.KO),
+    names_to = "genotype",
+    values_to = "proportion",
+    names_prefix = "PropMean.") |>
+  rename(celltype = BaselineProp.clusters) |>
+  select(-BaselineProp.Freq)
+
+write.csv(mm_nk_ilc_props, file.path(paths$out$tables, "mm_nk_ilc_props.csv"), row.names = FALSE)
+
+p3 <- ggplot(mm_nk_ilc_props, aes(x = genotype, y = proportion, fill = celltype)) +
+  geom_bar(stat = "identity") +
+  theme_classic() + 
+  scale_x_discrete(limits = c("WT", "KO")) +
+  scale_fill_manual(values = mm_nk_ilc_colors)
+
+ggsave(file.path(paths$out$figures, "mm_nk_ilc_props.svg"), p3, width = 4.5, height = 8)
+```
+
+
+```{r}
+hs_seurat <- readRDS(paths$data$human_imm)
+hs_seurat <- subset(hs_seurat, subset = condition %in% c("Term infant", "BPD"))
+hs_seurat@meta.data <- droplevels(hs_seurat@meta.data)
+
+hs_imm_props <- propeller(hs_seurat,
+  clusters = hs_seurat$celltype,
+  sample = hs_seurat$dataset,
+  group = hs_seurat$condition)
+
+write.csv(hs_imm_props, file.path(paths$out$tables, "hs_imm_props.csv"), row.names = FALSE)
+
+p4 <- plotCellTypeProps(hs_seurat,
+  clusters = hs_seurat$celltype,
+  sample = hs_seurat$condition
+) +
+  theme_classic() +
+  scale_x_discrete(limits = c("Term infant", "BPD"))
+
+ggsave(file.path(paths$out$figures, "hs_imm_props.svg"), p4, width = 6, height = 8)
+```

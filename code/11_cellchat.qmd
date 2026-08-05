@@ -1,0 +1,234 @@
+```{r}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(CellChat)
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(here)
+library(Seurat)
+
+set.seed(1)
+
+i_am("code/11_cellchat.qmd")
+
+walk(file.path("code/r_utils",
+               c("project_helpers.R", "run_cellchat.R")),
+     source)
+
+paths <- make_paths("11_cellchat", data = list(
+  mouse_data = here("data", "processed", "06_combined_annotated.h5ad"),
+  human_data = here("data", "processed", "alldata_neonatal_injury.rds")
+))
+```
+
+
+```{r}
+mm_sce <- readH5AD(paths$data$mouse_data, reader = "R")
+assayNames(mm_sce)[assayNames(mm_sce) == "X"] <- "logcounts"
+
+wt_mm_sce <- mm_sce[, mm_sce$genotype == "WT"]
+ko_mm_sce <- mm_sce[, mm_sce$genotype == "KO"]
+
+mm_sce_list <- list(wt = wt_mm_sce, ko = ko_mm_sce)
+```
+
+```{r}
+mm_cc_list <- build_cellchat(mm_sce_list, db = CellChatDB.mouse, min_cells = 5)
+
+saveRDS(mm_cc_list, file.path(paths$out$outputs, "mm_cc_list.rds"))
+```
+
+```{r}
+group_celltype <- c("nks", "gen_cap", "aerocytes",
+                    "arterial", "prolif gen_cap")
+
+mm_cc_list <- lapply(mm_cc_list, function(z) {
+  z <- subsetCellChat(z, idents.use = group_celltype)
+})
+
+mm_cc <- mergeCellChat(mm_cc_list, add.names = names(mm_cc_list))
+saveRDS(mm_cc, file.path(paths$out$outputs, "mm_cc.rds"))
+```
+
+```{r}
+netVisual_diffInteraction(mm_cc,
+  comparison = c("wt", "ko"),
+  weight.scale = TRUE,
+  measure = "count",
+  label.edge = FALSE,
+  color.edge = c("#D32F2F", "#00AFBB"),
+  title.name = NULL
+)
+
+netVisual_diffInteraction(mm_cc,
+  comparison = c("wt", "ko"),
+  weight.scale = TRUE,
+  measure = "weight",
+  label.edge = FALSE,
+  color.edge = c("#D32F2F", "#00AFBB"),
+  title.name = NULL
+)
+```
+
+
+```{r}
+mm_diff <- cellchat_diff_genes(mm_cc, pos_dataset = "ko", neg_dataset = "wt", thresh.fc = 0.1)
+mm_cc <- mm_diff$cc
+net_up <- mm_diff$net_up
+net_down <- mm_diff$net_down
+
+mouse_cc_colors <- c(
+  "gen_cap" = "#56C5CC",
+  "aerocytes" = "#F14F7B",
+  "arterial" = "#33658A",
+  "prolif gen_cap" = "#F7AA1C",
+  "nks" = "#000000"
+)
+
+tiff(file.path(paths$out$figures, "mm_cellchat_chord_nk_up.tiff"), res = 1200, width = 7.5 * 1200, height = 7.5 * 1200)
+cellchat_chord(mm_cc_list[["ko"]],
+  sources.use = "nks",
+  targets.use = c("gen_cap", "aerocytes", "arterial", "prolif gen_cap"),
+  net = net_up,
+  color.use = mouse_cc_colors,
+  show.legend = FALSE
+)
+dev.off()
+
+tiff(file.path(paths$out$figures, "mm_cellchat_chord_endo_up.tiff"), res = 1200, width = 7.5 * 1200, height = 7.5 * 1200)
+cellchat_chord(mm_cc_list[["ko"]],
+  sources.use = c("gen_cap", "prolif gen_cap"),
+  targets.use = "nks",
+  net = net_up,
+  color.use = mouse_cc_colors,
+  show.legend = FALSE
+)
+dev.off()
+
+p1 <- rankNet(mm_cc,
+  mode = "comparison",
+  measure = "weight",
+  sources.use = "nks",
+  targets.use = c("gen_cap", "aerocytes",
+                  "arterial", "prolif gen_cap"),
+  stacked = TRUE,
+  color.use = c("#00AFBB", "#D32F2F"),
+  do.stat = TRUE
+)
+ggsave(file.path(paths$out$figures, "mm_cellchat_rank_nk_source.svg"), p1, width = 5, height = 6)
+
+p2 <- rankNet(mm_cc,
+  mode = "comparison",
+  measure = "weight",
+  sources.use = c("gen_cap", "aerocytes",
+                  "arterial", "prolif gen_cap"),
+  targets.use = "nks",
+  stacked = TRUE,
+  color.use = c("#00AFBB", "#D32F2F"),
+  do.stat = TRUE
+)
+ggsave(file.path(paths$out$figures, "mm_cellchat_rank_endo_source.svg"), p2, width = 5, height = 6)
+```
+
+
+
+```{r}
+hs_seurat <- readRDS(paths$data$human_data)
+
+hs_seurat_sub <- subset(hs_seurat, subset = celltype_lineage %in% c("Immune", "Endothelial") & condition %in% c("Term infant", "BPD"))
+
+hs_bpd_seurat <- subset(hs_seurat_sub, subset = condition == "BPD")
+hs_ctrl_seurat <- subset(hs_seurat_sub, subset = condition == "Term infant")
+
+hs_seurat_list <- list(ctrl = hs_ctrl_seurat, bpd = hs_bpd_seurat)
+```
+
+
+```{r}
+hs_seurat_list <- lapply(hs_seurat_list, function(x) {
+  x@meta.data <- droplevels(x@meta.data)
+  x
+})
+
+hs_cc_list <- build_cellchat(hs_seurat_list, db = CellChatDB.human, min_cells = 10)
+
+hs_cc <- mergeCellChat(hs_cc_list, add.names = names(hs_cc_list))
+
+saveRDS(hs_cc_list, file.path(paths$out$outputs, "hs_cc_list.rds"))
+saveRDS(hs_cc, file.path(paths$out$outputs, "hs_cc.rds"))
+```
+
+
+```{r}
+hs_cc <- subsetCellChat(hs_cc,
+  idents.use = c("NK Cell", "gCap", "aCap", "Arterial EC")
+)
+
+hs_cc_list <- lapply(hs_cc_list, function(z) {
+  subsetCellChat(z,
+    idents.use = c("NK Cell", "gCap", "aCap", "Arterial EC")
+  )
+})
+```
+
+
+```{r}
+p3 <- rankNet(hs_cc,
+  mode = "comparison",
+  measure = "weight",
+  sources.use = "NK Cell",
+  targets.use = c("gCap", "aCap", "Arterial EC"),
+  stacked = TRUE,
+  do.stat = TRUE,
+  color.use = c("#00AFBB", "#D32F2F")
+)
+ggsave(file.path(paths$out$figures, "hs_cellchat_rank_nk_source.svg"), p3, width = 4.5, height = 6)
+
+
+p4 <- rankNet(hs_cc,
+  mode = "comparison",
+  measure = "weight",
+  sources.use = c("gCap", "aCap", "Arterial EC"),
+  targets.use = "NK Cell",
+  stacked = TRUE,
+  do.stat = TRUE,
+  color.use = c("#00AFBB", "#D32F2F")
+)
+ggsave(file.path(paths$out$figures, "hs_cellchat_rank_endo_source.svg"), p4, width = 4.5, height = 6)
+```
+
+
+```{r}
+hs_diff <- cellchat_diff_genes(hs_cc, pos_dataset = "bpd", neg_dataset = "ctrl", thresh.fc = 0.1)
+hs_cc <- hs_diff$cc
+net_up <- hs_diff$net_up
+net_down <- hs_diff$net_down
+
+hs_cc_colors <- c(
+  "gCap" = "#56C5CC",
+  "aCap" = "#F14F7B",
+  "Arterial EC" = "#33658A",
+  "NK Cell" = "#000000"
+)
+
+tiff(file.path(paths$out$figures, "hs_cellchat_chord_nk_down.tiff"), res = 1200, width = 7.5 * 1200, height = 7.5 * 1200)
+cellchat_chord(hs_cc_list[["ctrl"]],
+  sources.use = "NK Cell",
+  targets.use = c("gCap", "aCap", "Arterial EC"),
+  net = net_down,
+  color.use = hs_cc_colors,
+  show.legend = TRUE
+)
+dev.off()
+
+tiff(file.path(paths$out$figures, "hs_cellchat_chord_endo_up.tiff"), res = 1200, width = 7.5 * 1200, height = 7.5 * 1200)
+cellchat_chord(hs_cc_list[["bpd"]],
+  sources.use = c("gCap", "aCap", "Arterial EC"),
+  targets.use = "NK Cell",
+  net = net_up,
+  color.use = hs_cc_colors,
+  show.legend = FALSE
+)
+dev.off()
+```
