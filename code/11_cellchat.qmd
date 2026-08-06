@@ -36,19 +36,23 @@ mm_sce_list <- list(wt = wt_mm_sce, ko = ko_mm_sce)
 ```{r}
 mm_cc_list <- build_cellchat(mm_sce_list, db = CellChatDB.mouse, min_cells = 5)
 
+mm_cc <- mergeCellChat(mm_cc_list, add.names = names(mm_cc_list))
+
 saveRDS(mm_cc_list, file.path(paths$out$outputs, "mm_cc_list.rds"))
+saveRDS(mm_cc, file.path(paths$out$outputs, "mm_cc.rds"))
 ```
 
 ```{r}
-group_celltype <- c("nks", "gen_cap", "aerocytes",
+mm_group_celltype <- c("nks", "gen_cap", "aerocytes",
                     "arterial", "prolif gen_cap")
 
 mm_cc_list <- lapply(mm_cc_list, function(z) {
-  z <- subsetCellChat(z, idents.use = group_celltype)
+  z <- subsetCellChat(z, idents.use = mm_group_celltype)
 })
 
-mm_cc <- mergeCellChat(mm_cc_list, add.names = names(mm_cc_list))
-saveRDS(mm_cc, file.path(paths$out$outputs, "mm_cc.rds"))
+mm_cc <- subsetCellChat(mm_cc,
+  idents.use = mm_group_celltype
+)
 ```
 
 ```{r}
@@ -161,13 +165,15 @@ saveRDS(hs_cc, file.path(paths$out$outputs, "hs_cc.rds"))
 
 
 ```{r}
+hs_group_celltype <- c("NK Cell", "gCap", "aCap", "Arterial EC")
+
 hs_cc <- subsetCellChat(hs_cc,
-  idents.use = c("NK Cell", "gCap", "aCap", "Arterial EC")
+  idents.use = hs_group_celltype
 )
 
 hs_cc_list <- lapply(hs_cc_list, function(z) {
   subsetCellChat(z,
-    idents.use = c("NK Cell", "gCap", "aCap", "Arterial EC")
+    idents.use = hs_group_celltype
   )
 })
 ```
